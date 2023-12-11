@@ -11,4 +11,9 @@ For example, if you have a virtual instrument that is single-core or that doesn'
 
 Sustain pedal events sent to *Spread* are rebroadcast on all output channels, and sustained notes count towards each output channel's load until the pedal is released when using the **Min-Load** strategy. (To disregard sustain pedal events, just filter them out of the MIDI input stream to *Spread*.)
 
-Setting the **OutChannels** parameter to zero puts the plug-in in a bypass mode that simply preserves the channel of each input note. Sending an All Sounds Off (MIDI 120) or Reset All (MIDI 121) message to *Spread* causes it to send note-off events for all currently held notes and re-initialize any internal state associated with its channel distribution strategy (e.g., restart the random channel selection sequence for the **Random** strategy).
+Setting the **OutChannels** parameter to zero puts the plug-in in a bypass mode that simply preserves the channel of each input note. Sending an All Sounds Off (MIDI 120) or All Notes Off (MIDI 123) message to *Spread* causes it to send note-off events for all currently held notes and re-initialize any internal state associated with its channel distribution strategy (e.g., restart the random channel selection sequence for the **Random** strategy).
+
+### Change History
+
+* v1.0: initial release
+* v1.1: improved support for MIDI All Sounds Off and All Notes Off messages

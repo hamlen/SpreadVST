@@ -14,7 +14,7 @@ Spread::Spread(void)
 {
 	LOG("Spread constructor called.\n");
 	setControllerClass(FUID(SpreadControllerUID));
-	processSetup.maxSamplesPerBlock = 8192;
+	processSetup.maxSamplesPerBlock = kMaxInt32;
 	LOG("Spread constructor exited.\n");
 }
 
@@ -80,6 +80,7 @@ tresult PLUGIN_API Spread::setProcessing(TBool state)
 		counter = 0;
 		srand(0);
 	}
+	initial_points_sent = false;
 	LOG("Spread::setProcessing called and exited.\n");
 	return kResultOk;
 }
@@ -89,14 +90,22 @@ tresult PLUGIN_API Spread::setState(IBStream* s)
 	LOG("Spread::setState called.\n");
 
 	IBStreamer streamer(s, kLittleEndian);
-	unsigned char val;
+	unsigned char loaded_oc;
+	int32 loaded_strat;
 
-	if (!streamer.readUChar8(val))
+	if (!streamer.readUChar8(loaded_oc))
 	{
-		LOG("Spread::setState failed due to streamer error.\n");
-		return kResultFalse;
+		loaded_oc = 4;
+		loaded_strat = kMinLoad;
 	}
-	out_channels = (val > 16) ? 16 : val;
+	else if (!streamer.readInt32(loaded_strat))
+		loaded_strat = kMinLoad;
+
+	if ((loaded_oc > 16) || (loaded_strat < 0) || (loaded_strat >= kNumStrategies))
+		return kResultFalse;
+
+	out_channels = loaded_oc;
+	strategy = loaded_strat;
 	counter = 0;
 	srand(0);
 
@@ -109,20 +118,13 @@ tresult PLUGIN_API Spread::getState(IBStream* s)
 	LOG("Spread::getState called.\n");
 
 	IBStreamer streamer(s, kLittleEndian);
-	if (!streamer.writeUChar8(out_channels))
+	if (!streamer.writeUChar8(out_channels) || !streamer.writeInt32(strategy))
 	{
 		LOG("Spread::getState failed due to streamer error.\n");
 		return kResultFalse;
 	}
 
 	LOG("Spread::getState exited successfully.\n");
-	return kResultOk;
-}
-
-// Say ok to all bus arrangements, since this plug-in doesn't process any audio.
-tresult PLUGIN_API Spread::setBusArrangements(SpeakerArrangement* inputs, int32 numIns, SpeakerArrangement* outputs, int32 numOuts)
-{
-	LOG("Spread::setBusArrangements called and exited.\n");
 	return kResultOk;
 }
 
@@ -157,10 +159,15 @@ tresult PLUGIN_API Spread::getRoutingInfo(RoutingInfo& inInfo, RoutingInfo& outI
 	}
 }
 
-static inline int32 discretize(ParamValue value, int32 num_values)
+static inline ParamValue normalize(int32 value, int32 num_values)
 {
-	const int32 discrete = (int32)(value * (ParamValue)num_values);
-	return (discrete < 0) ? 0 : (discrete >= num_values) ? (num_values - 1) : discrete;
+	return ((ParamValue)value + 0.5) / (ParamValue)num_values;
+}
+
+static inline int32 discretize(ParamValue value, int32 max_value)
+{
+	const int32 discrete = (int32)(value * (ParamValue)max_value);
+	return (discrete < 0) ? 0 : (discrete > max_value) ? max_value : discrete;
 }
 
 inline note_pool_index Spread::get_next(pitch_or_index poi)
@@ -210,31 +217,52 @@ int16 Spread::outchannel_of_note(bool delete_it, int16 pitch, int32 noteId, int1
 	return -1;
 }
 
-tresult Spread::emergency_evict()
+tresult Spread::emergency_evict(IEventList* events_out, const Event& note_on_event)
 {
-	int16 held_pitch = -1;
-	for (int16 pitch = 0; pitch < 128; ++pitch)
+	if (events_out)
 	{
-		note_pool_index i = get_next(PITCH_TO_PoI(pitch));
-		if (i >= 0)
+		int16 held_pitch = -1;
+		for (int16 pitch = 0; pitch < 128; ++pitch)
 		{
-			if (get_next(i) >= 0)
+			const note_pool_index i = get_next(PITCH_TO_PoI(pitch));
+			if (i >= 0)
 			{
-				held_pitch = pitch;
-				break;
+				if (get_next(i) >= 0)
+				{
+					held_pitch = pitch;
+					break;
+				}
+				else if (held_pitch < 0)
+					held_pitch = pitch;
 			}
-			else if (held_pitch < 0)
-				held_pitch = pitch;
 		}
+		if (held_pitch < 0)
+			return kResultFalse;
+
+		const int32 id = note_pool[get_next(PITCH_TO_PoI(held_pitch))].noteId;
+		const int16 out_channel = delete_next(held_pitch, PITCH_TO_PoI(held_pitch), nullptr);
+		if (out_channel < 0)
+			return kResultFalse;
+		else
+		{
+			Event evt = {};
+			evt.sampleOffset = note_on_event.sampleOffset;
+			evt.ppqPosition = note_on_event.ppqPosition;
+			evt.type = Event::kNoteOffEvent;
+			evt.noteOff.channel = out_channel;
+			evt.noteOff.noteId = id;
+			evt.noteOff.pitch = held_pitch;
+			evt.noteOff.velocity = 1.F;
+			events_out->addEvent(evt);
+		}
+
+		return kResultOk;
 	}
-
-	if (held_pitch >= 0)
-		return (delete_next(held_pitch, PITCH_TO_PoI(held_pitch), nullptr) >= 0) ? kResultOk : kResultFalse;
-
-	return kResultFalse;
+	else
+		return kResultFalse;
 }
 
-tresult Spread::add_note(int16 pitch, int32 noteId, int16 in_channel, int16 out_channel)
+tresult Spread::add_note(const Event& note_on_event, int16 out_channel, IEventList* events_out)
 {
 	++cstate[out_channel].load;
 
@@ -242,7 +270,7 @@ tresult Spread::add_note(int16 pitch, int32 noteId, int16 in_channel, int16 out_
 	{
 		if (pool_size >= max_held_notes)
 		{
-			if (emergency_evict() != kResultOk)
+			if (emergency_evict(events_out, note_on_event) != kResultOk)
 				return kResultFalse;
 		}
 		else
@@ -251,9 +279,12 @@ tresult Spread::add_note(int16 pitch, int32 noteId, int16 in_channel, int16 out_
 			pool_size = (pool_size <= 0) ? initial_note_pool_size : (pool_size * 2);
 			if (pool_size > max_held_notes)
 				pool_size = max_held_notes;
-			note_in_record* new_pool = (note_in_record*)realloc(note_pool, pool_size * sizeof(*note_pool));
+			note_in_record* const new_pool = (note_in_record*)realloc(note_pool, pool_size * sizeof(*note_pool));
 			if (!new_pool)
-				return kResultFalse;
+			{
+				pool_size = free_list;
+				return emergency_evict(events_out, note_on_event);
+			}
 			note_pool = new_pool;
 			memset(note_pool + free_list, 0, ((size_t)pool_size - (size_t)free_list) * sizeof(*note_pool));
 		}
@@ -261,11 +292,11 @@ tresult Spread::add_note(int16 pitch, int32 noteId, int16 in_channel, int16 out_
 
 	const note_pool_index slot = free_list;
 	free_list = get_next(free_list);
-	note_pool[slot].noteId = noteId;
-	note_pool[slot].io_channels = (in_channel << 4) | out_channel;
+	note_pool[slot].noteId = note_on_event.noteOn.noteId;
+	note_pool[slot].io_channels = (note_on_event.noteOn.channel << 4) | out_channel;
 	set_next(slot, -1);
 
-	for (pitch_or_index poi = PITCH_TO_PoI(pitch), next = get_next(poi); ; next = get_next((poi = next)))
+	for (pitch_or_index poi = PITCH_TO_PoI(note_on_event.noteOn.pitch), next = get_next(poi); ; next = get_next((poi = next)))
 	{
 		if (next < 0)
 		{
@@ -376,8 +407,8 @@ void Spread::release_sostenuto_pedal(IEventList* events_out, int32 offset)
 
 tresult Spread::note_on(IEventList* events_out, Event& evt)
 {
-	int16 in_channel = evt.noteOn.channel;
-	int16 pitch = evt.noteOn.pitch;
+	const int16 in_channel = evt.noteOn.channel;
+	const int16 pitch = evt.noteOn.pitch;
 	if ((0 <= in_channel) && (in_channel < 16) && (0 <= pitch) && (pitch < 128))
 	{
 		int16 out_channel = in_channel;
@@ -431,7 +462,7 @@ tresult Spread::note_on(IEventList* events_out, Event& evt)
 			}
 		}
 
-		if (add_note(pitch, evt.noteOn.noteId, in_channel, out_channel) != kResultOk)
+		if (add_note(evt, out_channel, events_out) != kResultOk)
 			return kResultFalse;
 
 		evt.noteOn.channel = out_channel;
@@ -443,11 +474,11 @@ tresult Spread::note_on(IEventList* events_out, Event& evt)
 
 void Spread::note_off(IEventList* events_out, Event& evt)
 {
-	int16 in_channel = evt.noteOff.channel;
-	int16 pitch = evt.noteOff.pitch;
+	const int16 in_channel = evt.noteOff.channel;
+	const int16 pitch = evt.noteOff.pitch;
 	if ((0 <= in_channel) && (in_channel < 16) && (0 <= pitch) && (pitch < 128))
 	{
-		int16 out_channel = outchannel_of_note(true, pitch, evt.noteOff.noteId, in_channel);
+		const int16 out_channel = outchannel_of_note(true, pitch, evt.noteOff.noteId, in_channel);
 		if (out_channel >= 0)
 		{
 			evt.noteOff.channel = out_channel;
@@ -474,28 +505,35 @@ void Spread::polypressure(IEventList* events_out, Event& evt)
 	}
 }
 
-void Spread::release_all(IEventList* events_out, int32 offset, TQuarterNotes pos)
+void Spread::release_all(IEventList* events_out, int32 offset, TQuarterNotes pos, uint8 cc)
 {
-	Event evt = {};
-	evt.sampleOffset = offset;
-	evt.ppqPosition = pos;
-	evt.type = Event::kNoteOffEvent;
-	evt.noteOff.velocity = 1.;
-
-	for (int16 pitch = 0; pitch < 128; ++pitch)
+	if (events_out)
 	{
-		evt.noteOff.pitch = pitch;
-		for (;;)
+		Event evt = {};
+		evt.sampleOffset = offset;
+		evt.ppqPosition = pos;
+		evt.type = Event::kNoteOffEvent;
+		evt.noteOff.velocity = 1.;
+
+		for (int16 pitch = 0; pitch < 128; ++pitch)
 		{
-			evt.noteOff.channel = delete_next(pitch, PITCH_TO_PoI(pitch), &evt.noteOff.noteId);
-			if (evt.noteOff.channel >= 0)
+			evt.noteOff.pitch = pitch;
+			for (;;)
 			{
-				if (events_out)
+				evt.noteOff.channel = delete_next(pitch, PITCH_TO_PoI(pitch), &evt.noteOff.noteId);
+				if (evt.noteOff.channel >= 0)
 					events_out->addEvent(evt);
+				else
+					break;
 			}
-			else
-				break;
 		}
+
+		evt.type = Event::kLegacyMIDICCOutEvent;
+		evt.midiCCOut.controlNumber = cc;
+		evt.midiCCOut.value = evt.midiCCOut.value2 = 0;
+		const int16 n = (out_channels <= 0) ? 16 : out_channels;
+		for (evt.midiCCOut.channel = 0; evt.midiCCOut.channel < n; ++evt.midiCCOut.channel)
+			events_out->addEvent(evt);
 	}
 }
 
@@ -616,11 +654,11 @@ tresult PLUGIN_API Spread::process(ProcessData& data)
 			switch (nextId)
 			{
 			case kOutChannels: // number of output channels changed
-				set_outchannels(events_out, discretize(value, 17), nextSampleOffset);
+				set_outchannels(events_out, discretize(value, 16), nextSampleOffset);
 				break;
 
 			case kStrategy: // note distribution strategy changed
-				strategy = discretize(value, kNumStrategies);
+				strategy = discretize(value, kNumStrategies - 1);
 				break;
 
 			case kSustain: // sustain pedal changed
@@ -638,24 +676,26 @@ tresult PLUGIN_API Spread::process(ProcessData& data)
 				break;
 
 			case kMuteAll: // release and un-sustain all notes
-				if (value >= 0.5)
+				if (value < 0.5)
 				{
-					release_all(events_out, nextSampleOffset, evt.ppqPosition);
+					release_all(events_out, nextSampleOffset, evt.ppqPosition, kCtrlAllSoundsOff);
 					counter = 0;
 					srand(0);
 					for (int16 channel = 0; channel < 16; ++channel)
 						cstate[channel].susload = 0;
-					set_parameter(params_out, out_queue[kMuteAll], kMuteAll, nextSampleOffset + 1, 0.);
+					const int32 o = (nextSampleOffset + 1 < data.numSamples) ? (nextSampleOffset + 1) : (data.numSamples - 1);
+					set_parameter(params_out, out_queue[kMuteAll], kMuteAll, o, 1.);
 				}
 				break;
 
 			case kReleaseAll: // release all notes without un-sustaining
-				if (value >= 0.5)
+				if (value < 0.5)
 				{
-					release_all(events_out, nextSampleOffset, evt.ppqPosition);
+					release_all(events_out, nextSampleOffset, evt.ppqPosition, kCtrlAllNotesOff);
 					counter = 0;
 					srand(0);
-					set_parameter(params_out, out_queue[kReleaseAll], kReleaseAll, nextSampleOffset + 1, 0.);
+					const int32 o = (nextSampleOffset + 1 < data.numSamples) ? (nextSampleOffset + 1) : (data.numSamples - 1);
+					set_parameter(params_out, out_queue[kReleaseAll], kReleaseAll, o, 1.);
 				}
 				break;
 
@@ -688,6 +728,29 @@ tresult PLUGIN_API Spread::process(ProcessData& data)
 				break;
 			}
 			++eindex;
+		}
+	}
+
+	// Send initial parameter values to help hosts sync them with the VST
+	if (!initial_points_sent && params_out)
+	{
+		initial_points_sent = true;
+		const ParamValue default_values[kNumParams] = {
+			normalize(out_channels, 17),			// kOutChannels
+			normalize(strategy, kNumStrategies),	// kStrategy
+			sustain_pedal_down ? 1. : 0.,			// kSustainPedal
+			sostenuto_pedal_down ? 1. : 0.,			// kSostenutoPedal
+			1.,										// kMuteAll (0=on, 1=off as per MIDI standard)
+			1.,										// kReleaseAll (0=on, 1=off as per MIDI standard)
+			0.,										// kBypass
+		};
+		for (ParamID i = 0; i < kNumParams; ++i)
+		{
+			if (!out_queue[i] || out_queue[i]->getPointCount() <= 0)
+			{
+				if (set_parameter(params_out, out_queue[i], i, 0, default_values[i]) != kResultTrue)
+					initial_points_sent = false;
+			}
 		}
 	}
 

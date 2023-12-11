@@ -84,7 +84,6 @@ public:
 	tresult PLUGIN_API setIoMode(IoMode mode);
 	tresult PLUGIN_API setState(IBStream* state);
 	tresult PLUGIN_API getState(IBStream* state);
-	tresult PLUGIN_API setBusArrangements(SpeakerArrangement* inputs, int32 numIns, SpeakerArrangement* outputs, int32 numOuts);
 	tresult PLUGIN_API canProcessSampleSize(int32 symbolicSampleSize);
 	~Spread(void);
 
@@ -92,9 +91,9 @@ protected:
 	inline note_pool_index get_next(pitch_or_index poi);
 	inline void set_next(pitch_or_index poi, note_pool_index j);
 	int16 delete_next(int32 pitch, pitch_or_index poi, int32* noteId); // returns out_channel of deleted note
-	tresult add_note(int16 pitch, int32 noteId, int16 in_channel, int16 out_channel);
+	tresult add_note(const Event& note_on_event, int16 out_channel, IEventList* events_out);
 	int16 outchannel_of_note(bool delete_it, int16 pitch, int32 noteId, int16 in_channel);
-	tresult emergency_evict();
+	tresult emergency_evict(IEventList* events_out, const Event& note_on_event);
 
 	void set_outchannels(IEventList* events_out, int16 new_oc, int32 offset);
 	void broadcast_event(IEventList* events_out, uint8 cc, uint8 value, int32 offset);
@@ -105,7 +104,7 @@ protected:
 	tresult note_on(IEventList* events_out, Event& evt);
 	void note_off(IEventList* events_out, Event& evt);
 	void polypressure(IEventList* events_out, Event& evt);
-	void release_all(IEventList* events_out, int32 offset, TQuarterNotes pos);
+	void release_all(IEventList* events_out, int32 offset, TQuarterNotes pos, uint8 cc);
 
 	out_channel_state cstate[16] = {};
 	note_pool_index held_notes[128] = {};
@@ -120,6 +119,7 @@ protected:
 	bool sustain_pedal_down = false;
 	bool sostenuto_pedal_down = false;
 	bool bypass = false;
+	bool initial_points_sent = false;
 };
 
 #ifdef LOGGING

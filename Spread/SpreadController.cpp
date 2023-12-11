@@ -75,8 +75,19 @@ tresult PLUGIN_API SpreadController::initialize(FUnknown* context)
 
 	parameters.addParameter(STR16("Sustain"), nullptr, 1, 0., ParameterInfo::kCanAutomate, kSustain);
 	parameters.addParameter(STR16("Sostenuto"), nullptr, 1, 0., ParameterInfo::kCanAutomate, kSostenuto);
-	parameters.addParameter(STR16("Mute All"), nullptr, 1, 0., ParameterInfo::kCanAutomate, kMuteAll);
-	parameters.addParameter(STR16("Release All"), nullptr, 1, 0., ParameterInfo::kCanAutomate, kReleaseAll);
+
+	StringListParameter* muteAllParam = new StringListParameter(STR16("Mute All"), kMuteAll);
+	muteAllParam->appendString(STR16("Triggered"));
+	muteAllParam->appendString(STR16("--"));
+	muteAllParam->getInfo().defaultNormalizedValue = 1.;
+	parameters.addParameter(muteAllParam);
+
+	StringListParameter* releaseAllParam = new StringListParameter(STR16("Release All"), kReleaseAll);
+	releaseAllParam->appendString(STR16("Triggered"));
+	releaseAllParam->appendString(STR16("--"));
+	releaseAllParam->getInfo().defaultNormalizedValue = 1.;
+	parameters.addParameter(releaseAllParam);
+
 	parameters.addParameter(STR16("Bypass"), nullptr, 1, 0., ParameterInfo::kIsBypass, kBypass);
 
 	LOG("SpreadController::initialize exited normally with code %d.\n", result);
@@ -101,14 +112,21 @@ tresult PLUGIN_API SpreadController::setComponentState(IBStream* state)
 	}
 
 	IBStreamer streamer(state, kLittleEndian);
-	unsigned char val;
-	if (!streamer.readUChar8(val))
-	{
-		LOG("SpreadController::setComponentState failed due to streamer error.\n");
+
+	unsigned char loaded_oc;
+	if (!streamer.readUChar8(loaded_oc))
+		loaded_oc = 4;
+	else if (loaded_oc > 16)
 		return kResultFalse;
-	}
-	if (val > 16) val = 16;
-	setParamNormalized(kOutChannels, normalize(val, 16));
+
+	int32 loaded_strat;
+	if (!streamer.readInt32(loaded_strat))
+		loaded_strat = kMinLoad;
+	else if ((loaded_strat < 0) || (loaded_strat >= kNumStrategies))
+		return kResultFalse;
+
+	setParamNormalized(kOutChannels, normalize(loaded_oc, 16));
+	setParamNormalized(kStrategy, normalize(loaded_strat, kNumStrategies - 1));
 
 	LOG("SpreadController::setComponentState exited normally.\n");
 	return kResultOk;
@@ -133,7 +151,7 @@ tresult PLUGIN_API SpreadController::getMidiControllerAssignment(int32 busIndex,
 			tag = kMuteAll;
 			LOG("SpreadController::getMidiControllerAssignment registered kCtrlAllSoundsOff.\n");
 			return kResultTrue;
-		case kCtrlResetAllCtrlers:
+		case kCtrlAllNotesOff:
 			tag = kReleaseAll;
 			LOG("SpreadController::getMidiControllerAssignment registered kCtrlResetAllCtrlers.\n");
 			return kResultTrue;
