@@ -264,8 +264,6 @@ tresult Spread::emergency_evict(IEventList* events_out, const Event& note_on_eve
 
 tresult Spread::add_note(const Event& note_on_event, int16 out_channel, IEventList* events_out)
 {
-	++cstate[out_channel].load;
-
 	if (free_list >= pool_size)
 	{
 		if (pool_size >= max_held_notes)
@@ -280,17 +278,23 @@ tresult Spread::add_note(const Event& note_on_event, int16 out_channel, IEventLi
 			if (pool_size > max_held_notes)
 				pool_size = max_held_notes;
 			note_in_record* const new_pool = (note_in_record*)realloc(note_pool, pool_size * sizeof(*note_pool));
-			if (!new_pool)
+			if (new_pool)
+			{
+				note_pool = new_pool;
+				memset(note_pool + free_list, 0, ((size_t)pool_size - (size_t)free_list) * sizeof(*note_pool));
+			}
+			else
 			{
 				pool_size = free_list;
-				return emergency_evict(events_out, note_on_event);
+				if (emergency_evict(events_out, note_on_event) != kResultOk)
+					return kResultFalse;
 			}
-			note_pool = new_pool;
-			memset(note_pool + free_list, 0, ((size_t)pool_size - (size_t)free_list) * sizeof(*note_pool));
 		}
 	}
 
 	const note_pool_index slot = free_list;
+	if (slot >= pool_size)
+		return kResultFalse;
 	free_list = get_next(free_list);
 	note_pool[slot].noteId = note_on_event.noteOn.noteId;
 	note_pool[slot].io_channels = (note_on_event.noteOn.channel << 4) | out_channel;
@@ -304,6 +308,8 @@ tresult Spread::add_note(const Event& note_on_event, int16 out_channel, IEventLi
 			break;
 		}
 	}
+
+	++cstate[out_channel].load;
 
 	return kResultOk;
 }
