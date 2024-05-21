@@ -159,15 +159,15 @@ tresult PLUGIN_API Spread::getRoutingInfo(RoutingInfo& inInfo, RoutingInfo& outI
 	}
 }
 
-static inline ParamValue normalize(int32 value, int32 num_values)
+static inline ParamValue normalize(int32 value, int32 max_value)
 {
-	return ((ParamValue)value + 0.5) / (ParamValue)num_values;
+	return (value <= 0) ? 0.0 : (value >= max_value) ? 1.0 : (((ParamValue)value + 0.5) / (ParamValue)(max_value + 1));
 }
 
 static inline int32 discretize(ParamValue value, int32 max_value)
 {
-	const int32 discrete = (int32)(value * (ParamValue)max_value);
-	return (discrete < 0) ? 0 : (discrete > max_value) ? max_value : discrete;
+	const int32 discrete = (int32)(value * (ParamValue)(max_value + 1));
+	return (discrete <= 0) ? 0 : (discrete >= max_value) ? max_value : discrete;
 }
 
 inline note_pool_index Spread::get_next(pitch_or_index poi)
@@ -660,11 +660,11 @@ tresult PLUGIN_API Spread::process(ProcessData& data)
 			switch (nextId)
 			{
 			case kOutChannels: // number of output channels changed
-				set_outchannels(events_out, discretize(value, 16), nextSampleOffset);
+				set_outchannels(events_out, discretize(value, 17), nextSampleOffset);
 				break;
 
 			case kStrategy: // note distribution strategy changed
-				strategy = discretize(value, kNumStrategies - 1);
+				strategy = discretize(value, kNumStrategies);
 				break;
 
 			case kSustain: // sustain pedal changed
@@ -742,8 +742,8 @@ tresult PLUGIN_API Spread::process(ProcessData& data)
 	{
 		initial_points_sent = true;
 		const ParamValue default_values[kNumParams] = {
-			normalize(out_channels, 17),			// kOutChannels
-			normalize(strategy, kNumStrategies),	// kStrategy
+			normalize(out_channels, 16),			// kOutChannels
+			normalize(strategy, kNumStrategies - 1),// kStrategy
 			sustain_pedal_down ? 1. : 0.,			// kSustainPedal
 			sostenuto_pedal_down ? 1. : 0.,			// kSostenutoPedal
 			1.,										// kMuteAll (0=on, 1=off as per MIDI standard)

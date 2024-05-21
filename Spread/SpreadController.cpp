@@ -21,9 +21,9 @@ tresult PLUGIN_API SpreadController::queryInterface(const char* iid, void** obj)
 	return EditController::queryInterface(iid, obj);
 }
 
-static inline ParamValue normalize(int32 value, int32 num_values)
+static inline ParamValue normalize(int32 value, int32 max_value)
 {
-	return ((ParamValue)value + 0.5) / (ParamValue)num_values;
+	return (value <= 0) ? 0.0 : (value >= max_value) ? 1.0 : (((ParamValue)value + 0.5) / (ParamValue)(max_value + 1));
 }
 
 static void uint32_to_str16(TChar* p, uint32 n)
@@ -64,13 +64,13 @@ tresult PLUGIN_API SpreadController::initialize(FUnknown* context)
 		uint32_to_str16(ocString, i);
 		ocParam->appendString(ocString);
 	}
-	ocParam->getInfo().defaultNormalizedValue = normalize(4, 17);
+	ocParam->getInfo().defaultNormalizedValue = normalize(4, 16);
 	parameters.addParameter(ocParam);
 
 	StringListParameter* sParam = new StringListParameter(STR16("Strategy"), kStrategy);
 	for (int32 i = 0; i < kNumStrategies; ++i)
 		sParam->appendString(strategy_name[i]);
-	sParam->getInfo().defaultNormalizedValue = normalize(kMinLoad, kNumStrategies);
+	sParam->getInfo().defaultNormalizedValue = normalize(kMinLoad, kNumStrategies - 1);
 	parameters.addParameter(sParam);
 
 	parameters.addParameter(STR16("Sustain"), nullptr, 1, 0., ParameterInfo::kCanAutomate, kSustain);
