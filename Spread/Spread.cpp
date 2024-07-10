@@ -660,11 +660,11 @@ tresult PLUGIN_API Spread::process(ProcessData& data)
 			switch (nextId)
 			{
 			case kOutChannels: // number of output channels changed
-				set_outchannels(events_out, discretize(value, 17), nextSampleOffset);
+				set_outchannels(events_out, discretize(value, 16), nextSampleOffset);
 				break;
 
 			case kStrategy: // note distribution strategy changed
-				strategy = discretize(value, kNumStrategies);
+				strategy = discretize(value, kNumStrategies - 1);
 				break;
 
 			case kSustain: // sustain pedal changed
