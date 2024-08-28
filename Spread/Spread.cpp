@@ -558,22 +558,24 @@ static tresult set_parameter(IParameterChanges* params_out, IParamValueQueue*& q
 
 tresult PLUGIN_API Spread::process(ProcessData& data)
 {
+	if (data.numSamples < 0) return kResultFalse;
+
 	// We shouldn't be asked for audio output, but process it anyway (emit silence) to accommodate uncompliant hosts.
-	bool is32bit = (data.symbolicSampleSize == kSample32);
-	if (is32bit || (data.symbolicSampleSize == kSample64))
+	const bool is32bit = (data.symbolicSampleSize == kSample32);
+	const size_t buffersize = data.numSamples * (is32bit ? sizeof(Sample32) : sizeof(Sample64));
+	if ((is32bit || (data.symbolicSampleSize == kSample64)) && (buffersize > 0))
 	{
 		for (int32 i = 0; i < data.numOutputs; ++i)
 		{
 			for (int32 j = 0; j < data.outputs[i].numChannels; ++j)
 			{
-				void* buffer = is32bit ? (void*)data.outputs[i].channelBuffers32[j] : (void*)data.outputs[i].channelBuffers64[j];
-				if (buffer)
-					memset(buffer, 0, data.numSamples * (is32bit ? sizeof(*data.outputs[i].channelBuffers32[j]) : sizeof(*data.outputs[i].channelBuffers64[j])));
+				if (void* buffer = is32bit ? (void*)data.outputs[i].channelBuffers32[j] : (void*)data.outputs[i].channelBuffers64[j])
+					memset(buffer, 0, buffersize);
 			}
 		}
 	}
 	for (int32 i = 0; i < data.numOutputs; ++i)
-		data.outputs[i].silenceFlags = (1ULL << data.outputs[i].numChannels) - 1;
+		data.outputs[i].silenceFlags = (1ULL << data.outputs[i].numChannels) - 1ULL;
 
 	IParameterChanges* params_in = data.inputParameterChanges;
 	IParameterChanges* params_out = data.outputParameterChanges;
@@ -689,7 +691,8 @@ tresult PLUGIN_API Spread::process(ProcessData& data)
 					srand(0);
 					for (int16 channel = 0; channel < 16; ++channel)
 						cstate[channel].susload = 0;
-					const int32 o = (nextSampleOffset + 1 < data.numSamples) ? (nextSampleOffset + 1) : (data.numSamples - 1);
+					int32 o = (nextSampleOffset + 1 < data.numSamples) ? (nextSampleOffset + 1) : (data.numSamples - 1);
+					if (o < 0) o = 0; // possible if host flushes parameters by setting numSamples=0
 					set_parameter(params_out, out_queue[kMuteAll], kMuteAll, o, 1.);
 				}
 				break;
@@ -700,7 +703,8 @@ tresult PLUGIN_API Spread::process(ProcessData& data)
 					release_all(events_out, nextSampleOffset, evt.ppqPosition, kCtrlAllNotesOff);
 					counter = 0;
 					srand(0);
-					const int32 o = (nextSampleOffset + 1 < data.numSamples) ? (nextSampleOffset + 1) : (data.numSamples - 1);
+					int32 o = (nextSampleOffset + 1 < data.numSamples) ? (nextSampleOffset + 1) : (data.numSamples - 1);
+					if (o < 0) o = 0; // possible if host flushes parameters by setting numSamples=0
 					set_parameter(params_out, out_queue[kReleaseAll], kReleaseAll, o, 1.);
 				}
 				break;
